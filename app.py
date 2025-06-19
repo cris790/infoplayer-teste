@@ -43,7 +43,7 @@ def get_credentials(region):
     elif region in ["NA", "BR", "SAC", "US"]:
         return "3949452934", "F46D5208CC953C71CA8874D06D5F0239DBA4303DADA65B0D8FA65111A5B00626"
     else:
-        return "3949462337", "B029E6669A7E7E4D216F7B3AC501915E5975660252377A8B4A753CF4192CAA26"
+        return "uid", "password"
 
 def get_jwt_token(region):
     uid, password = get_credentials(region)
