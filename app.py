@@ -41,27 +41,17 @@ def get_credentials(region):
     if region == "IND":
         return "3942040791", "EDD92B8948F4453F544C9432DFB4996D02B4054379A0EE083D8459737C50800B"
     elif region in ["NA", "BR", "SAC", "US"]:
-        return "3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"
+        return "uid", "password"
     else:
-        return "3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"
+        return "uid", "password"
 
 def get_jwt_token(region):
     uid, password = get_credentials(region)
-    jwt_url = f"https://genjwt.vercel.app/api/get_jwt?type=4&guest_uid={uid}&guest_password={password}"
+    jwt_url = f"https://jwt-aditya.vercel.app/token?uid={uid}&password={password}"
     response = requests.get(jwt_url)
     if response.status_code != 200:
         return None
-    
-    try:
-        jwt_data = response.json()
-        if isinstance(jwt_data, dict) and 'BearerAuth' in jwt_data:
-            return {
-                'token': jwt_data['BearerAuth'],
-                'serverUrl': jwt_data.get('serverUrl', 'https://na-origin.warzonestats.gg')  # Default server URL if not provided
-            }
-        return jwt_data  # Fallback to original format if BearerAuth not found
-    except ValueError:
-        return None
+    return response.json()
 
 @app.route('/player-info', methods=['GET'])
 def main():
@@ -80,7 +70,7 @@ def main():
     if not jwt_info or 'token' not in jwt_info:
         return jsonify({"error": "Failed to fetch JWT token"}), 500
 
-    api = jwt_info.get('serverUrl', 'https://na-origin.warzonestats.gg')
+    api = jwt_info['serverUrl']
     token = jwt_info['token']
 
     protobuf_data = create_protobuf(saturn_, 1)
