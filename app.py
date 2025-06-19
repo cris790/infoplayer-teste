@@ -51,7 +51,17 @@ def get_jwt_token(region):
     response = requests.get(jwt_url)
     if response.status_code != 200:
         return None
-    return response.json()
+    
+    try:
+        jwt_data = response.json()
+        if isinstance(jwt_data, dict) and 'BearerAuth' in jwt_data:
+            return {
+                'token': jwt_data['BearerAuth'],
+                'serverUrl': jwt_data.get('serverUrl', 'https://na-origin.warzonestats.gg')  # Default server URL if not provided
+            }
+        return jwt_data  # Fallback to original format if BearerAuth not found
+    except ValueError:
+        return None
 
 @app.route('/player-info', methods=['GET'])
 def main():
@@ -70,7 +80,7 @@ def main():
     if not jwt_info or 'token' not in jwt_info:
         return jsonify({"error": "Failed to fetch JWT token"}), 500
 
-    api = jwt_info['serverUrl']
+    api = jwt_info.get('serverUrl', 'https://na-origin.warzonestats.gg')
     token = jwt_info['token']
 
     protobuf_data = create_protobuf(saturn_, 1)
