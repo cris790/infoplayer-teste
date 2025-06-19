@@ -41,7 +41,7 @@ def get_credentials(region):
     if region == "IND":
         return "3942040791", "EDD92B8948F4453F544C9432DFB4996D02B4054379A0EE083D8459737C50800B"
     elif region in ["NA", "BR", "SAC", "US"]:
-        return "3949452934", "F46D5208CC953C71CA8874D06D5F0239DBA4303DADA65B0D8FA65111A5B00626"
+        return "uid", "password"
     else:
         return "uid", "password"
 
