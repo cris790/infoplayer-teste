@@ -64,7 +64,7 @@ def get_jwt_token(region):
             
         return {
             'token': bearer_token,
-            'serverUrl': jwt_data.get('serverUrl', 'https://prod-notice.hellokitty.com')  # Default URL if not provided
+            'serverUrl': jwt_data.get('serverUrl', 'https://client.us.freefiremobile.com/GetPlayerPersonalShow')  # Default URL if not provided
         }
     except ValueError:
         return None
@@ -86,7 +86,7 @@ def main():
     if not jwt_info or 'token' not in jwt_info:
         return jsonify({"error": "Failed to fetch JWT token"}), 500
 
-    api = jwt_info.get('serverUrl', 'https://prod-notice.hellokitty.com')
+    api = jwt_info.get('serverUrl', 'https://client.us.freefiremobile.com/GetPlayerPersonalShow')
     token = jwt_info['token']
 
     protobuf_data = create_protobuf(saturn_, 1)
