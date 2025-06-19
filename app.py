@@ -1,241 +1,315 @@
-import os
-import binascii
-import logging
-from datetime import datetime
-from flask import Flask, request, jsonify
-import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+import binascii
+from flask import Flask, request, jsonify
+import requests
+import random
 import uid_generator_pb2
 from GetPlayerPersonalShow_pb2 import GetPlayerPersonalShow
+from secret import key, iv
 
 app = Flask(__name__)
 
-# Configuration
-API_TIMEOUT = 15  # seconds
-MAX_RETRIES = 2
-VERSION = "1.2.0"
+def hex_to_bytes(hex_string):
+    return bytes.fromhex(hex_string)
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Load secrets from environment (recommended) or secret.py
-try:
-    KEY = os.getenv('AES_KEY', 'default_secret_key_here')[:16].encode()
-    IV = os.getenv('AES_IV', 'default_iv_here')[:16].encode()
-except Exception as e:
-    logger.critical(f"Failed to load encryption keys: {str(e)}")
-    raise
-
-class APIError(Exception):
-    """Custom exception for API errors"""
-    pass
-
-def create_protobuf(uid, request_type=1):
-    """Create protobuf message"""
+def create_protobuf(akiru_, aditya):
     message = uid_generator_pb2.uid_generator()
-    message.akiru_ = uid
-    message.aditya = request_type
+    message.akiru_ = akiru_
+    message.aditya = aditya
     return message.SerializeToString()
 
-def encrypt_data(data):
-    """Encrypt data using AES-CBC"""
-    try:
-        cipher = AES.new(KEY, AES.MODE_CBC, IV)
-        padded_data = pad(data, AES.block_size)
-        return cipher.encrypt(padded_data)
-    except Exception as e:
-        logger.error(f"Encryption failed: {str(e)}")
-        raise APIError("Encryption failed")
+def protobuf_to_hex(protobuf_data):
+    return binascii.hexlify(protobuf_data).decode()
 
-def get_api_endpoint(region):
-    """Get the appropriate API endpoint based on region"""
+def decode_hex(hex_string):
+    byte_data = binascii.unhexlify(hex_string.replace(' ', ''))
+    users = GetPlayerPersonalShow()
+    users.ParseFromString(byte_data)
+    return users
+
+def encrypt_aes(hex_data, key, iv):
+    key = key.encode()[:16]
+    iv = iv.encode()[:16]
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    padded_data = pad(bytes.fromhex(hex_data), AES.block_size)
+    encrypted_data = cipher.encrypt(padded_data)
+    return binascii.hexlify(encrypted_data).decode()
+
+def get_credentials(region):
     region = region.upper()
-    endpoints = {
-        "NA": "https://prod-na.hellokitty.com",
-        "EU": "https://prod-eu.hellokitty.com",
-        "AS": "https://prod-as.hellokitty.com",
-        "IND": "https://prod-in.hellokitty.com",
-        "BR": "https://prod-br.hellokitty.com",
-        "US": "https://prod-us.hellokitty.com",
-        "SAC": "https://prod-sac.hellokitty.com"
-    }
-    return endpoints.get(region, "https://prod.hellokitty.com")
+    if region == "IND":
+        return "3942040791", "EDD92B8948F4453F544C9432DFB4996D02B4054379A0EE083D8459737C50800B"
+    elif region in ["NA", "BR", "SAC", "US"]:
+        return "3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"
+    else:
+        return "3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"
 
 def get_jwt_token(region):
-    """Retrieve JWT token for authentication"""
-    credentials = {
-        "IND": ("3942040791", "EDD92B8948F4453F544C9432DFB4996D02B4054379A0EE083D8459737C50800B"),
-        "NA": ("3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"),
-        "BR": ("3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"),
-        "SAC": ("3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"),
-        "US": ("3949487129", "67D4C358CCE73BFF8B295B99111D6BDF7D67E149E2C6FD90F28BE45B7C00CAA6"),
-    }
-    
-    uid, password = credentials.get(region.upper(), credentials["NA"])
-    url = f"https://genjwt.vercel.app/api/get_jwt?type=4&guest_uid={uid}&guest_password={password}"
+    uid, password = get_credentials(region)
+    jwt_url = f"https://genjwt.vercel.app/api/get_jwt?type=4&guest_uid={uid}&guest_password={password}"
+    response = requests.get(jwt_url)
+    if response.status_code != 200:
+        return None
     
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        jwt_data = response.json()
+        if not jwt_data.get('success', False):
+            return None
         
-        if not data.get('success', False):
-            raise APIError("JWT service returned unsuccessful response")
-            
-        token = data.get('BearerAuth')
-        if not token or len(token.split('.')) != 3:
-            raise APIError("Invalid JWT token format")
+        # Extract the Bearer token from the BearerAuth field
+        bearer_token = jwt_data.get('BearerAuth', '')
+        if not bearer_token:
+            return None
             
         return {
-            'token': token,
-            'serverUrl': data.get('serverUrl', '')
+            'token': bearer_token,
+            'serverUrl': jwt_data.get('serverUrl', 'https://prod-notice.hellokitty.com')  # Default URL if not provided
         }
-    except Exception as e:
-        logger.error(f"JWT token request failed: {str(e)}")
-        raise APIError("Failed to obtain authentication token")
-
-def make_game_api_request(api, token, encrypted_data):
-    """Make request to game server with retry logic"""
-    headers = {
-        'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)',
-        'Authorization': f'Bearer {token}',
-        'X-Unity-Version': '2018.4.11f1',
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
-    
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            response = requests.post(
-                f"{api}/GetPlayerPersonalShow",
-                headers=headers,
-                data=encrypted_data,
-                timeout=API_TIMEOUT
-            )
-            response.raise_for_status()
-            
-            if not response.content:
-                raise APIError("Empty response from game server")
-                
-            return response.content
-            
-        except requests.Timeout:
-            if attempt == MAX_RETRIES:
-                raise APIError("Game server timeout after multiple attempts")
-            logger.warning(f"Timeout occurred, retrying ({attempt + 1}/{MAX_RETRIES})")
-            
-        except requests.RequestException as e:
-            raise APIError(f"Game server request failed: {str(e)}")
-
-def parse_game_response(response_data):
-    """Parse the binary game server response"""
-    try:
-        users = GetPlayerPersonalShow()
-        users.ParseFromString(response_data)
-        return users
-    except Exception as e:
-        logger.error(f"Failed to parse game response: {str(e)}")
-        raise APIError("Failed to decode game server response")
-
-def build_player_info(player):
-    """Build player info dictionary from protobuf"""
-    info = {
-        'user_id': player.user_id,
-        'username': player.username,
-        'level': player.level,
-        'rank': player.rank,
-        'clan_id': player.clan_id,
-        'clan_tag': player.clan_tag,
-        'matches_played': player.matches_played,
-        'kills': player.kills,
-        'skill_rating': player.skill_rating,
-        'headshot_percentage': player.headshot_percentage,
-        'last_login': player.last_login,
-    }
-    
-    if player.HasField("subscription"):
-        info['subscription'] = {
-            'tier': player.subscription.tier,
-            'renewal_period': player.subscription.renewal_period
-        }
-        
-    if player.achievements:
-        info['achievements'] = [{
-            'id': a.achievement_id,
-            'progress': a.progress
-        } for a in player.achievements]
-        
-    return info
+    except ValueError:
+        return None
 
 @app.route('/player-info', methods=['GET'])
-def player_info():
-    """Main endpoint for player information"""
-    start_time = datetime.now()
+def main():
     uid = request.args.get('uid')
-    region = request.args.get('region', 'NA')
-    
-    if not uid:
-        return jsonify({"error": "UID parameter is required"}), 400
-        
+    region = request.args.get('region')
+
+    if not uid or not region:
+        return jsonify({"error": "Missing 'uid' or 'region' query parameter"}), 400
+
     try:
-        uid_int = int(uid)
+        saturn_ = int(uid)
     except ValueError:
-        return jsonify({"error": "UID must be a number"}), 400
-    
+        return jsonify({"error": "Invalid UID"}), 400
+
+    jwt_info = get_jwt_token(region)
+    if not jwt_info or 'token' not in jwt_info:
+        return jsonify({"error": "Failed to fetch JWT token"}), 500
+
+    api = jwt_info.get('serverUrl', 'https://prod-notice.hellokitty.com')
+    token = jwt_info['token']
+
+    protobuf_data = create_protobuf(saturn_, 1)
+    hex_data = protobuf_to_hex(protobuf_data)
+    encrypted_hex = encrypt_aes(hex_data, key, iv)
+
+    headers = {
+        'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)',
+        'Connection': 'Keep-Alive',
+        'Expect': '100-continue',
+        'Authorization': f'Bearer {token}',
+        'X-Unity-Version': '2018.4.11f1',
+        'X-GA': 'v1 1',
+        'ReleaseVersion': 'OB49',
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+
     try:
-        # Step 1: Get authentication token
-        jwt_data = get_jwt_token(region)
-        api = jwt_data.get('serverUrl') or get_api_endpoint(region)
-        token = jwt_data['token']
-        
-        # Step 2: Prepare request data
-        protobuf_data = create_protobuf(uid_int)
-        encrypted_data = encrypt_data(protobuf_data)
-        
-        # Step 3: Make API request
-        response_data = make_game_api_request(api, token, encrypted_data)
-        
-        # Step 4: Parse response
-        game_data = parse_game_response(response_data)
-        
-        # Step 5: Build result
-        result = {
-            'success': True,
-            'version': VERSION,
-            'processing_time': str(datetime.now() - start_time),
-            'player': None,
-            'clan': None
-        }
-        
-        if game_data.players:
-            result['player'] = build_player_info(game_data.players[0])
-            
-        if game_data.clans:
-            result['clan'] = {
-                'id': game_data.clans[0].clan_id,
-                'member_count': game_data.clans[0].member_count
+        response = requests.post(f"{api}/GetPlayerPersonalShow", headers=headers, data=bytes.fromhex(encrypted_hex))
+        response.raise_for_status()
+    except requests.RequestException:
+        return jsonify({"error": "Failed to contact game server"}), 502
+
+    hex_response = response.content.hex()
+
+    try:
+        users = decode_hex(hex_response)
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse Protobuf: {str(e)}"}), 500
+
+    result = {}
+
+    if users.players:
+        result['players'] = []
+        for p in users.players:
+            player_data = {
+                'user_id': p.user_id,
+                'account_status': p.account_status,
+                'username': p.username,
+                'country_code': p.country_code,
+                'level': p.level,
+                'experience': p.experience,
+                'clan_id': p.clan_id,
+                'title_id': p.title_id,
+                'matches_played': p.matches_played,
+                'kills': p.kills,
+                'daily_challenges': p.daily_challenges,
+                'current_avatar': p.current_avatar,
+                'main_weapon': p.main_weapon,
+                'cosmetic_skin': p.cosmetic_skin,
+                'last_login': p.last_login,
+                'rank': p.rank,
+                'skill_rating': p.skill_rating,
+                'headshot_percentage': p.headshot_percentage,
+                'current_rank': p.current_rank,
+                'clan_tag': p.clan_tag,
+                'join_date': p.join_date,
+                'game_version': p.game_version,
+                'email_verified': p.email_verified,
+                'phone_verified': p.phone_verified
             }
             
-        return jsonify(result)
-        
-    except APIError as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'version': VERSION
-        }), 502
-        
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': "Internal server error",
-            'version': VERSION
-        }), 500
+            if p.HasField("subscription"):
+                player_data['subscription'] = {
+                    'tier': p.subscription.tier,
+                    'renewal_period': p.subscription.renewal_period
+                }
+                
+            if p.achievements:
+                player_data['achievements'] = []
+                for ach in p.achievements:
+                    achievement = {
+                        'achievement_id': ach.achievement_id,
+                        'progress': ach.progress,
+                        'details': {
+                            'objective_type': ach.details.objective_type,
+                            'target_value': ach.details.target_value,
+                            'current_value': ach.details.current_value,
+                            'reward_type': ach.details.reward_type,
+                            'reward_amount': ach.details.reward_amount
+                        } if ach.HasField("details") else None
+                    }
+                    player_data['achievements'].append(achievement)
+                    
+            if p.HasField("equipped"):
+                player_data['equipped_items'] = []
+                for slot in p.equipped.slots:
+                    player_data['equipped_items'].append({
+                        'slot_type': slot.slot_type,
+                        'item_id': slot.item_id,
+                        'variant': slot.variant
+                    })
+                    
+            if p.HasField("region"):
+                player_data['region'] = {
+                    'region_id': p.region.region_id,
+                    'ping': p.region.ping
+                }
+                
+            result['players'].append(player_data)
+
+    if users.clans:
+        result['clans'] = []
+        for c in users.clans:
+            clan_data = {
+                'clan_id': c.clan_id,
+                'member_count': c.member_count,
+                'status': c.status,
+                'permission_level': c.permission_level,
+                'creation_date': c.creation_date
+            }
+            if c.clan_logo:
+                clan_data['clan_logo'] = binascii.hexlify(c.clan_logo).decode()
+            if c.ranks:
+                clan_data['ranks'] = []
+                for rank in c.ranks:
+                    rank_data = {}
+                    if rank.HasField("custom_rank"):
+                        rank_data['custom_rank'] = rank.custom_rank
+                    if rank.HasField("standard_rank"):
+                        rank_data['standard_rank'] = rank.standard_rank
+                    clan_data['ranks'].append(rank_data)
+            result['clans'].append(clan_data)
+
+    if users.titles:
+        result['titles'] = []
+        for t in users.titles:
+            result['titles'].append({
+                'title_id': t.title_id,
+                'title_name': t.title_name,
+                'unlock_requirement': t.unlock_requirement,
+                'rarity': t.rarity,
+                'usage_count': t.usage_count,
+                'category': t.category
+            })
+
+    if users.HasField("detailed_player"):
+        dp = users.detailed_player
+        detailed_player = {
+            'user_id': dp.user_id,
+            'account_status': dp.account_status,
+            'username': dp.username,
+            'country_code': dp.country_code,
+            'level': dp.level,
+            'experience': dp.experience,
+            'clan_id': dp.clan_id,
+            'title_id': dp.title_id,
+            'matches_played': dp.matches_played,
+            'kills': dp.kills,
+            'daily_challenges': dp.daily_challenges,
+            'current_avatar': dp.current_avatar,
+            'main_weapon': dp.main_weapon,
+            'cosmetic_skin': dp.cosmetic_skin,
+            'last_login': dp.last_login,
+            'rank': dp.rank,
+            'skill_rating': dp.skill_rating,
+            'headshot_percentage': dp.headshot_percentage,
+            'current_rank': dp.current_rank,
+            'clan_tag': dp.clan_tag,
+            'join_date': dp.join_date,
+            'game_version': dp.game_version,
+            'email_verified': dp.email_verified,
+            'phone_verified': dp.phone_verified
+        }
+        if dp.HasField("subscription"):
+            detailed_player['subscription'] = {
+                'tier': dp.subscription.tier,
+                'renewal_period': dp.subscription.renewal_period
+            }
+        result['detailed_player'] = detailed_player
+
+    if users.HasField("social"):
+        result['social'] = {
+            'friends_count': users.social.friends_count,
+            'friend_requests': users.social.friend_requests,
+            'max_friends': users.social.max_friends,
+            'blocked_count': users.social.blocked_count,
+            'favorite_friend': users.social.favorite_friend,
+            'preferred_region': users.social.preferred_region
+        }
+
+    if users.HasField("profile"):
+        result['profile'] = {
+            'user_id': users.profile.user_id,
+            'banner': users.profile.banner,
+            'bio': users.profile.bio,
+            'layout_style': users.profile.layout_style,
+            'custom_url': users.profile.custom_url
+        }
+
+    if users.HasField("settings"):
+        result['settings'] = {
+            'sensitivity': users.settings.sensitivity
+        }
+
+    if users.HasField("session"):
+        result['session'] = {
+            'current_streak': users.session.current_streak,
+            'session_start': users.session.session_start,
+            'session_end': users.session.session_end,
+            'match_count': users.session.match_count
+        }
+
+    if users.unlocks:
+        result['unlocks'] = []
+        for u in users.unlocks:
+            result['unlocks'].append({
+                'item_id': u.item_id,
+                'unlock_type': u.unlock_type
+            })
+
+    if users.currencies:
+        result['currencies'] = []
+        for c in users.currencies:
+            result['currencies'].append({
+                'currency_type': c.currency_type,
+                'amount': c.amount,
+                'max_capacity': c.max_capacity,
+                'bonus': c.bonus
+            })
+
+    result['credit'] = '@Ujjaiwal'
+    return jsonify(result)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000)
